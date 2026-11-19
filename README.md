@@ -38,18 +38,26 @@ Restart Claude Desktop. On Windows use a path like `C:\\Users\\you\\pitviper-mcp
 | `pitviper_status` | Signed in? + Discover page |
 | `pitviper_search_markets` | Search markets, returns links |
 | `pitviper_open` | Open any PitViper page by path |
-| `pitviper_place_bet` | Side + amount → **preview ticket**; `confirm=true` submits |
+| `pitviper_place_bet` | Side + amount → **preview ticket**; `confirm=true` submits. Add `competition` to trade a competition's money |
+| `pitviper_competition_book` | Markets in a competition's "Trade the eligible book" list |
 | `pitviper_portfolio` | Positions / balance / history |
 | `pitviper_click`, `pitviper_fill` | Escape hatches for any UI the high-level tools miss |
 | `pitviper_snapshot`, `pitviper_screenshot` | See the current page |
 
 Try: *"Search PitViper for the Bears game and show me the odds"* → *"Put 50 on Yes"* → Claude shows the ticket → *"confirm"*.
 
+## Competitions
+
+Orders from a plain market page are funded by **Main**. The Account menu and account dropdown don't switch the paying account (they're just links), so to trade a competition's money pass `competition` (the competition page path) and use the market name from its **Trade the eligible book** list:
+
+*"What's in the eligible book for my competition?"* → *"Put 25 on Yes for Bears at Packers in the competition"* → check the ticket names the competition money → *"confirm"*.
+
 ## Options (env vars in the config's `"env"` block)
 
 - `PITVIPER_HEADLESS=false` — watch the browser work
 - `PITVIPER_PROFILE` — profile folder (default `~/.pitviper-mcp/profile`)
 - `PITVIPER_MAX_CHARS` — snapshot size cap (default 15000)
+- `PITVIPER_CHROMIUM` — use a specific Chromium/Chrome executable instead of Playwright's
 
 ## Troubleshooting
 
