@@ -1,0 +1,23 @@
+{
+  "name": "pitviper-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that drives app.pitviper.trading (simulated prediction-market betting) through a real browser.",
+  "type": "module",
+  "bin": {
+    "pitviper-mcp": "src/server.js",
+    "pitviper-login": "src/login.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "login": "node src/login.js",
+    "postinstall": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "playwright": "^1.49.0",
+    "zod": "^3.25.0"
+  }
+}
