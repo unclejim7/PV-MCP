@@ -28,6 +28,7 @@ export async function launch({ headless = HEADLESS } = {}) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
+    ...(process.env.PITVIPER_CHROMIUM ? { executablePath: process.env.PITVIPER_CHROMIUM } : {}),
     viewport: { width: 1280, height: 900 },
   });
   return ctx;
@@ -207,20 +208,92 @@ const SUBMIT_RE = /^\s*(place|buy|submit|confirm|trade|bet|review|lock in|take)/
  * Open a market, pick a side, enter an amount. With confirm=false it stops at
  * the ticket and returns it for review; with confirm=true it submits.
  */
-export async function placeBet({ market, side, amount, confirm }) {
-  const p = await goto(market);
-  if (await isLoginPage(p)) return snapshot(p);
+const ELIGIBLE_RE = /eligible book/i;
 
-  const sideRe = new RegExp(`^\\s*${esc(side)}\\b`, "i");
-  const sideBtn = await firstVisible([
-    p.getByRole("button", { name: sideRe }),
-    p.getByRole("radio", { name: sideRe }),
-    p.getByRole("tab", { name: sideRe }),
-    p.getByRole("button", { name: new RegExp(esc(side), "i") }),
+/** The competition page's "Trade the eligible book" section (deepest container holding the heading). */
+async function eligibleBook(p) {
+  const heading = p.getByRole("heading", { name: ELIGIBLE_RE }).or(p.getByText(ELIGIBLE_RE));
+  if ((await heading.count()) === 0) return null;
+  const containers = p.locator("section, article, div").filter({ has: heading });
+  // Document order puts ancestors first; walk from the deepest outward and take the
+  // first container that holds more than the heading itself (i.e. the list).
+  const n = await containers.count();
+  for (let i = n - 1; i >= 0; i--) {
+    const c = containers.nth(i);
+    if ((await c.locator("a[href], button").count()) > 0) return c;
+  }
+  return null;
+}
+
+/**
+ * Start an order from a competition's eligible-book list so it's funded by the
+ * competition balance, not Main. Returns true if the side was already clicked
+ * (the list row had its own outcome buttons).
+ */
+async function enterViaCompetition(p, { competition, market, side, sideRe }) {
+  await goto(competition);
+  if (await isLoginPage(p)) return { login: true };
+  const book = await eligibleBook(p);
+  if (!book) throw new Error(`No "Trade the eligible book" list on ${competition}. Use pitviper_open on the competition page to check the path.`);
+
+  const marketRe = new RegExp(esc(market), "i");
+  // Row inside the book that names the market and has the side button: click it directly.
+  const row = book
+    .locator("li, article, section, div, a")
+    .filter({ hasText: marketRe })
+    .filter({ has: p.getByRole("button", { name: sideRe }) })
+    .last();
+  if ((await row.count()) > 0 && (await row.isVisible().catch(() => false))) {
+    await row.getByRole("button", { name: sideRe }).first().click();
+    await settle(p);
+    return { sidePicked: true };
+  }
+  // Otherwise open the market from the book (keeps the competition context).
+  const entry = await firstVisible([
+    book.getByRole("link", { name: marketRe }),
+    book.getByRole("button", { name: marketRe }),
+    book.getByText(marketRe),
   ]);
-  if (!sideBtn) throw new Error(`No button for side "${side}" on this market. Use pitviper_snapshot to see the options.`);
-  await sideBtn.click();
+  if (!entry) throw new Error(`"${market}" isn't in this competition's eligible book. Use pitviper_competition_book to list what is.`);
+  await entry.click();
   await settle(p);
+  return { sidePicked: false };
+}
+
+export async function competitionBook(competition) {
+  const p = await goto(competition);
+  if (await isLoginPage(p)) return snapshot(p);
+  const book = await eligibleBook(p);
+  if (!book) return `No "Trade the eligible book" list found here.\n\n` + (await snapshot(p));
+  let tree = await book.ariaSnapshot({ timeout: 10000 }).catch(() => book.innerText());
+  if (tree.length > MAX_CHARS) tree = tree.slice(0, MAX_CHARS) + "\n…(truncated)";
+  return `URL: ${p.url()}\n\n## Trade the eligible book\n${tree}\n`;
+}
+
+export async function placeBet({ market, side, amount, confirm, competition }) {
+  const p = await getPage();
+  const sideRe = new RegExp(`^\\s*${esc(side)}\\b`, "i");
+  let sidePicked = false;
+  if (competition) {
+    const r = await enterViaCompetition(p, { competition, market, side, sideRe });
+    if (r.login) return snapshot(p);
+    sidePicked = r.sidePicked;
+  } else {
+    await goto(market);
+    if (await isLoginPage(p)) return snapshot(p);
+  }
+
+  if (!sidePicked) {
+    const sideBtn = await firstVisible([
+      p.getByRole("button", { name: sideRe }),
+      p.getByRole("radio", { name: sideRe }),
+      p.getByRole("tab", { name: sideRe }),
+      p.getByRole("button", { name: new RegExp(esc(side), "i") }),
+    ]);
+    if (!sideBtn) throw new Error(`No button for side "${side}" on this market. Use pitviper_snapshot to see the options.`);
+    await sideBtn.click();
+    await settle(p);
+  }
 
   const amountEl = await firstVisible([
     p.getByRole("spinbutton"),
@@ -236,7 +309,10 @@ export async function placeBet({ market, side, amount, confirm }) {
   if (!confirm) {
     return (
       `PREVIEW ONLY — nothing submitted. Side "${side}", amount ${amount}.\n` +
-      `Review the ticket below; call pitviper_place_bet again with confirm=true to submit.\n\n` +
+      (competition
+        ? `Funding: started from the eligible book on ${competition} — check the ticket below names the competition money, not Main, before confirming.\n`
+        : `Funding: plain market page — this orders from Main. Pass "competition" to trade a competition's money.\n`) +
+      `Review the ticket below; call pitviper_place_bet again with the same arguments and confirm=true to submit.\n\n` +
       (await snapshot(p))
     );
   }

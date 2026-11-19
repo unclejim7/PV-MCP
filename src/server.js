@@ -61,14 +61,30 @@ tool(
   "pitviper_place_bet",
   "Place a simulated bet. Opens the market, selects the side, enters the amount. " +
     "With confirm=false (default) it STOPS at the order ticket and returns it for review — show it to the user. " +
-    "Only call with confirm=true after the user approves that exact ticket.",
+    "Only call with confirm=true after the user approves that exact ticket. " +
+    "Without `competition` the order is funded by Main. To trade a competition's money, pass `competition` " +
+    "(the competition page path) and give `market` as the market's name from its 'Trade the eligible book' list. " +
+    "Don't try to switch accounts via the Account menu or account dropdown — those are just links to other pages.",
   {
-    market: z.string().describe("Market path or URL (from a link in search/open results)"),
+    market: z
+      .string()
+      .describe("Market path or URL; or, with `competition`, the market's name as shown in the eligible book"),
+    competition: z
+      .string()
+      .optional()
+      .describe("Competition page path. When set, the order starts from its 'Trade the eligible book' list so it uses competition funds"),
     side: z.string().describe("Outcome button label as shown, e.g. 'Yes', 'No', or a team name"),
     amount: z.number().positive().describe("Simulated amount to enter in the ticket"),
     confirm: z.boolean().default(false).describe("false = preview only; true = submit"),
   },
   async (args) => text(await b.placeBet(args))
+);
+
+tool(
+  "pitviper_competition_book",
+  "List the markets in a competition's 'Trade the eligible book' section — the markets you can trade with that competition's money.",
+  { competition: z.string().describe("Competition page path or URL") },
+  async ({ competition }) => text(await b.competitionBook(competition))
 );
 
 tool(
