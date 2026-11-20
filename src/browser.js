@@ -26,7 +26,7 @@ export function withLock(fn) {
 
 export async function launch({ headless = HEADLESS } = {}) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { executablePath: process.env.PV_CHROME_PATH || undefined, 
     headless,
     ...(process.env.PITVIPER_CHROMIUM ? { executablePath: process.env.PITVIPER_CHROMIUM } : {}),
     viewport: { width: 1280, height: 900 },
