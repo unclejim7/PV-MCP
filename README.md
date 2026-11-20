@@ -57,7 +57,7 @@ Orders from a plain market page are funded by **Main**. The Account menu and acc
 - `PITVIPER_HEADLESS=false` — watch the browser work
 - `PITVIPER_PROFILE` — profile folder (default `~/.pitviper-mcp/profile`)
 - `PITVIPER_MAX_CHARS` — snapshot size cap (default 15000)
-- `PITVIPER_CHROMIUM` — use a specific Chromium/Chrome executable instead of Playwright's
+- `PITVIPER_CHROMIUM` (or `PV_CHROME_PATH`) — use a specific Chrome/Chromium executable. Without it the server uses Playwright's Chromium, or falls back to your installed Google Chrome / Edge (needed on macOS 13, which Playwright no longer ships Chromium for)
 
 ## Troubleshooting
 

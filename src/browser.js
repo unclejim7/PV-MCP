@@ -24,14 +24,34 @@ export function withLock(fn) {
   return run;
 }
 
+/**
+ * Launch the browser. Order: an explicit path (PITVIPER_CHROMIUM / PV_CHROME_PATH),
+ * then Playwright's bundled Chromium, then the installed Google Chrome or Edge.
+ * The fallback matters on systems Playwright no longer ships Chromium for (e.g. macOS 13).
+ */
 export async function launch({ headless = HEADLESS } = {}) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { executablePath: process.env.PV_CHROME_PATH || undefined, 
-    headless,
-    ...(process.env.PITVIPER_CHROMIUM ? { executablePath: process.env.PITVIPER_CHROMIUM } : {}),
-    viewport: { width: 1280, height: 900 },
-  });
-  return ctx;
+  const base = { headless, viewport: { width: 1280, height: 900 } };
+  const explicit = process.env.PITVIPER_CHROMIUM || process.env.PV_CHROME_PATH;
+  if (explicit) return chromium.launchPersistentContext(PROFILE_DIR, { ...base, executablePath: explicit });
+
+  const attempts = [{}, { channel: "chrome" }, { channel: "msedge" }];
+  const errors = [];
+  for (const opt of attempts) {
+    try {
+      return await chromium.launchPersistentContext(PROFILE_DIR, { ...base, ...opt });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      // Only fall through when the browser binary is missing; real launch errors
+      // (e.g. profile already in use) should surface as-is.
+      if (!/doesn't exist|not found|no such file|is not installed|ENOENT/i.test(msg)) throw e;
+      errors.push(`${opt.channel || "bundled chromium"}: ${msg.split("\n")[0]}`);
+    }
+  }
+  throw new Error(
+    "No usable browser. Install Google Chrome, or set PITVIPER_CHROMIUM to a Chrome/Chromium executable.\n" +
+      errors.join("\n")
+  );
 }
 
 export async function getPage() {

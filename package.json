@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "login": "node src/login.js",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install chromium || echo \"(Bundled Chromium unavailable here - the server will use your installed Google Chrome instead.)\""
   },
   "engines": {
     "node": ">=18"
