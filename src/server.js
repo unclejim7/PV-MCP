@@ -62,6 +62,8 @@ tool(
   "Place a simulated bet. Opens the market, selects the side, enters the amount. " +
     "With confirm=false (default) it STOPS at the order ticket and returns it for review — show it to the user. " +
     "Only call with confirm=true after the user approves that exact ticket. " +
+    "With confirm=true the result starts 'SUBMITTED' only when the page showed the order went through; " +
+    "'NOT CONFIRMED' means treat it as not placed and check pitviper_portfolio before retrying. " +
     "Without `competition` the order is funded by Main. To trade a competition's money, pass `competition` " +
     "(the competition page path) and give `market` as the market's name from its 'Trade the eligible book' list. " +
     "Don't try to switch accounts via the Account menu or account dropdown — those are just links to other pages.",
@@ -76,6 +78,14 @@ tool(
     side: z.string().describe("Outcome button label as shown, e.g. 'Yes', 'No', or a team name"),
     amount: z.number().positive().describe("Simulated amount to enter in the ticket"),
     confirm: z.boolean().default(false).describe("false = preview only; true = submit"),
+    min_multiplier: z
+      .number()
+      .positive()
+      .optional()
+      .describe(
+        "Price floor for confirm=true, e.g. 1.4 = only submit if the ticket pays 1.4x or better. " +
+          "Live prices move every play; ask the user for a floor and pass it so a moved price doesn't need a new OK."
+      ),
   },
   async (args) => text(await b.placeBet(args))
 );

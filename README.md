@@ -46,6 +46,12 @@ Restart Claude Desktop. On Windows use a path like `C:\\Users\\you\\pitviper-mcp
 
 Try: *"Search PitViper for the Bears game and show me the odds"* → *"Put 50 on Yes"* → Claude shows the ticket → *"confirm"*.
 
+## Live prices and submitting
+
+Prices on live games move every play, so a ticket you OK'd can be stale a minute later. Give a floor ("go, anything 1.4x or better"): Claude passes it as `min_multiplier`, and the tool only submits if the ticket still pays at least that, reading it from the ticket's `$stake → $payout` line.
+
+After clicking the ticket's Buy button, the tool waits for the order to go through (the ticket closes or clears, or a success message appears). It says **SUBMITTED** only then. **NOT CONFIRMED** means treat it as not placed, so check the portfolio before retrying.
+
 ## Competitions
 
 Orders from a plain market page are funded by **Main**. The Account menu and account dropdown don't switch the paying account (they're just links), so to trade a competition's money pass `competition` (the competition page path) and use the market name from its **Trade the eligible book** list:
