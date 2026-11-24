@@ -24,14 +24,34 @@ export function withLock(fn) {
   return run;
 }
 
+/**
+ * Launch the browser. Order: an explicit path (PITVIPER_CHROMIUM / PV_CHROME_PATH),
+ * then Playwright's bundled Chromium, then the installed Google Chrome or Edge.
+ * The fallback matters on systems Playwright no longer ships Chromium for (e.g. macOS 13).
+ */
 export async function launch({ headless = HEADLESS } = {}) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { executablePath: process.env.PV_CHROME_PATH || undefined, 
-    headless,
-    ...(process.env.PITVIPER_CHROMIUM ? { executablePath: process.env.PITVIPER_CHROMIUM } : {}),
-    viewport: { width: 1280, height: 900 },
-  });
-  return ctx;
+  const base = { headless, viewport: { width: 1280, height: 900 } };
+  const explicit = process.env.PITVIPER_CHROMIUM || process.env.PV_CHROME_PATH;
+  if (explicit) return chromium.launchPersistentContext(PROFILE_DIR, { ...base, executablePath: explicit });
+
+  const attempts = [{}, { channel: "chrome" }, { channel: "msedge" }];
+  const errors = [];
+  for (const opt of attempts) {
+    try {
+      return await chromium.launchPersistentContext(PROFILE_DIR, { ...base, ...opt });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      // Only fall through when the browser binary is missing; real launch errors
+      // (e.g. profile already in use) should surface as-is.
+      if (!/doesn't exist|not found|no such file|is not installed|ENOENT/i.test(msg)) throw e;
+      errors.push(`${opt.channel || "bundled chromium"}: ${msg.split("\n")[0]}`);
+    }
+  }
+  throw new Error(
+    "No usable browser. Install Google Chrome, or set PITVIPER_CHROMIUM to a Chrome/Chromium executable.\n" +
+      errors.join("\n")
+  );
 }
 
 export async function getPage() {
@@ -270,7 +290,7 @@ export async function competitionBook(competition) {
   return `URL: ${p.url()}\n\n## Trade the eligible book\n${tree}\n`;
 }
 
-export async function placeBet({ market, side, amount, confirm, competition }) {
+export async function placeBet({ market, side, amount, confirm, competition, min_multiplier }) {
   const p = await getPage();
   const sideRe = new RegExp(`^\\s*${esc(side)}\\b`, "i");
   let sidePicked = false;
@@ -307,8 +327,15 @@ export async function placeBet({ market, side, amount, confirm, competition }) {
   await settle(p, 3000);
 
   if (!confirm) {
+    await findSubmit(p, amountEl);
+    const pv = await readTicketPrice(p, amountEl, side);
+    await clearSubmitMark(p);
     return (
       `PREVIEW ONLY — nothing submitted. Side "${side}", amount ${amount}.\n` +
+      (pv.multiplier != null
+        ? `Ticket price now: ${fmtX(pv.multiplier)}${pv.detail ? ` (${pv.detail})` : ""}. ` +
+          `Live prices move every play; pass min_multiplier on confirm to set a floor.\n`
+        : "") +
       (competition
         ? `Funding: started from the eligible book on ${competition} — check the ticket below names the competition money, not Main, before confirming.\n`
         : `Funding: plain market page — this orders from Main. Pass "competition" to trade a competition's money.\n`) +
@@ -317,24 +344,163 @@ export async function placeBet({ market, side, amount, confirm, competition }) {
     );
   }
 
+  const btn = await findSubmit(p, amountEl);
+  const price = await readTicketPrice(p, amountEl, side);
+  if (min_multiplier != null) {
+    if (price.multiplier == null) {
+      await clearSubmitMark(p);
+      throw new Error(`Couldn't read the ticket price, so I can't check it against your ${min_multiplier}x floor. Nothing submitted.`);
+    }
+    if (price.multiplier + 1e-9 < min_multiplier) {
+      await clearSubmitMark(p);
+      return (
+        `NOT SUBMITTED — price ${fmtX(price.multiplier)} is below your ${min_multiplier}x floor` +
+        `${price.detail ? ` (${price.detail})` : ""}.\n\n` +
+        (await snapshot(p))
+      );
+    }
+  }
+
   acceptDialogs = true;
+  let result;
   try {
-    const btn = await firstVisible([p.getByRole("button", { name: SUBMIT_RE })]);
-    if (!btn || !(await btn.isEnabled().catch(() => false))) {
-      throw new Error("Couldn't find an enabled submit button. Use pitviper_snapshot to inspect the ticket.");
+    if (!btn) throw new Error("Couldn't find an enabled Buy/Place button on the ticket. Nothing submitted. Use pitviper_snapshot to inspect it.");
+    const label = ((await btn.innerText().catch(() => "")) || "").trim().replace(/\s+/g, " ");
+    const before = await pageText(p);
+    await btn.click({ timeout: 10000 });
+    await settle(p, 3000);
+    // Two-step tickets ("Review" -> "Confirm"): click a confirm step that just appeared.
+    const confirmBtn = await firstVisible([p.getByRole("button", { name: /^\s*(confirm|place order|submit order)/i })]);
+    if (confirmBtn && !(await confirmBtn.evaluate((el) => el.hasAttribute("data-pv-submit")).catch(() => false))) {
+      if (await confirmBtn.isEnabled().catch(() => false)) {
+        await confirmBtn.click();
+        await settle(p, 3000);
+      }
     }
-    await btn.click();
-    await settle(p);
-    // Two-step tickets ("Review" -> "Confirm"): click the confirm step if one appeared.
-    const confirmBtn = await firstVisible([p.getByRole("button", { name: /^\s*confirm/i })]);
-    if (confirmBtn && (await confirmBtn.isEnabled().catch(() => false))) {
-      await confirmBtn.click();
-      await settle(p);
-    }
+    result = await verifySubmitted(p, { btn, amountEl, before });
+    result.label = label;
   } finally {
     acceptDialogs = false;
+    await clearSubmitMark(p);
   }
-  return `SUBMITTED. Check the result below (and pitviper_portfolio).\n\n` + (await snapshot(p));
+
+  const priceLine =
+    price.multiplier != null ? `Price at submit: ${fmtX(price.multiplier)}${price.detail ? ` (${price.detail})` : ""}.\n` : "";
+  if (result.ok) {
+    return (
+      `SUBMITTED — clicked "${result.label}"; ${result.why}.\n${priceLine}Confirm the fill with pitviper_portfolio.\n\n` +
+      (await snapshot(p))
+    );
+  }
+  return (
+    `⚠️ NOT CONFIRMED — clicked "${result.label}" but saw no sign the order went through` +
+    `${result.why ? ` (${result.why})` : ""}. Treat it as NOT placed and check pitviper_portfolio before retrying, ` +
+    `so you don't double up.\n${priceLine}\n` +
+    (await snapshot(p))
+  );
+}
+
+const fmtX = (m) => `${Math.round(m * 100) / 100}x`;
+const pageText = (p) => p.locator("body").innerText().catch(() => "");
+
+/**
+ * The ticket's submit button: walk up from the amount box to the smallest
+ * container holding an enabled Buy/Place/... button, skipping tabs and toggles
+ * (e.g. a Buy|Sell switch). Prefer type=submit, else the last match, since the
+ * submit button sits at the bottom of a ticket.
+ */
+async function findSubmit(p, amountEl) {
+  const found = await amountEl.evaluate((input, src) => {
+    const re = new RegExp(src, "i");
+    const visible = (el) => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+    };
+    const isToggle = (el) =>
+      el.getAttribute("role") === "tab" ||
+      el.getAttribute("role") === "radio" ||
+      el.hasAttribute("aria-selected") ||
+      el.hasAttribute("aria-pressed") ||
+      !!el.closest('[role="tablist"], [role="radiogroup"]');
+    const name = (el) => (el.innerText || el.value || el.getAttribute("aria-label") || "").trim();
+    for (let node = input.parentElement; node && node !== document.documentElement; node = node.parentElement) {
+      const btns = [...node.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(
+        (b) => visible(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true" && !isToggle(b) && re.test(name(b))
+      );
+      if (btns.length) {
+        const pick = btns.find((b) => b.type === "submit") || btns[btns.length - 1];
+        pick.setAttribute("data-pv-submit", "1");
+        return true;
+      }
+    }
+    return false;
+  }, SUBMIT_RE.source);
+  return found ? p.locator("[data-pv-submit]").first() : null;
+}
+
+const ARROW = "(?:→|->|➜|⟶)";
+const MONEY = "\\$\\s?([\\d,]+(?:\\.\\d+)?)";
+
+/**
+ * Read the ticket's price. The ticket is the smallest container holding both the
+ * amount box and the submit button (marked by findSubmit), so other outcomes'
+ * prices elsewhere on the page are never picked up. Order: a "$1,500 → $2,219.88"
+ * payout line (payout / stake), then an "1.48x" inside the ticket, then the
+ * chosen side's own "Bengals 1.48x" button.
+ */
+async function readTicketPrice(p, amountEl, side) {
+  const ticket = await amountEl
+    .evaluate((input) => {
+      const submit = document.querySelector("[data-pv-submit]");
+      for (let n = input.parentElement; n && n !== document.body; n = n.parentElement) {
+        if (!submit || n.contains(submit)) return n.innerText || "";
+      }
+      return "";
+    })
+    .catch(() => "");
+  const num = (s) => Number(s.replace(/,/g, ""));
+  const arrow = ticket.match(new RegExp(`${MONEY}\\s*${ARROW}\\s*${MONEY}`));
+  if (arrow && num(arrow[1]) > 0) {
+    return { multiplier: num(arrow[2]) / num(arrow[1]), detail: `$${arrow[1]} → $${arrow[2]}` };
+  }
+  const x = ticket.match(/(\d+(?:\.\d+)?)\s?x\b/i);
+  if (x) return { multiplier: Number(x[1]), detail: "on ticket" };
+  const sideBtn = p.getByRole("button", { name: new RegExp(`^\\s*${esc(side)}\\b.*\\d(\\.\\d+)?\\s?x`, "i") }).first();
+  const label = (await sideBtn.innerText({ timeout: 2000 }).catch(() => "")) || "";
+  const sx = label.match(/(\d+(?:\.\d+)?)\s?x\b/i);
+  if (sx) return { multiplier: Number(sx[1]), detail: `from the "${label.trim().replace(/\s+/g, " ")}" button` };
+  return { multiplier: null, detail: "" };
+}
+
+const clearSubmitMark = (p) =>
+  p
+    .evaluate(() => document.querySelectorAll("[data-pv-submit]").forEach((e) => e.removeAttribute("data-pv-submit")))
+    .catch(() => {});
+
+const SUCCESS_RE = /order (placed|filled|submitted)|\bfilled\b|bet placed|trade placed|you bought|position opened|success/i;
+const FAIL_RE = /insufficient|not enough|price (has )?(changed|moved)|slippage|order failed|couldn.t place|\berror\b/i;
+
+/** Poll for evidence the order went through instead of assuming it did. */
+async function verifySubmitted(p, { btn, amountEl, before }) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const now = await pageText(p);
+    const fresh = (re) => {
+      const m = now.match(re);
+      return m && !re.test(before) ? m[0] : null;
+    };
+    const failed = fresh(FAIL_RE);
+    if (failed) return { ok: false, why: `page says "${failed}"` };
+    const success = fresh(SUCCESS_RE);
+    if (success) return { ok: true, why: `page says "${success}"` };
+    if (!(await amountEl.isVisible().catch(() => false))) return { ok: true, why: "the ticket closed" };
+    const v = await amountEl.inputValue().catch(() => null);
+    if (v === "" || v === "0") return { ok: true, why: "the ticket was cleared" };
+    if (!(await btn.isVisible().catch(() => false))) return { ok: true, why: "the submit button went away" };
+    await p.waitForTimeout(500);
+  }
+  return { ok: false, why: "the ticket is still open with the amount filled in" };
 }
 
 export async function portfolio() {
